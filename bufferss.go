@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
-	"html"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -21,14 +20,27 @@ var duration int
 var help bool
 var exPath string
 
+/*
+ *
+ */
 func main() {
-	parseFlags()
+	ok := parseFlags()
+	if !ok {
+		log.Print("Missing parameter <url>. Aborting...")
+		os.Exit(1)
+	}
 
 	log.Print("Starting bufferss ...")
 
 	initialize()
-	http.HandleFunc("/bar", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		filepath := []string{exPath, "/bufferss.feed"}
+		content, _ := ioutil.ReadFile(strings.Join(filepath, ""))
+
+		w.Write([]byte("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+		w.Write(content)
+		w.Write([]byte("</xml>"))
 	})
 
 	log.Print("Successfully started.")
@@ -36,8 +48,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", port), nil))
 }
 
-func parseFlags() {
-	flag.StringVar(&url, "url", "", "<url> referes to the remote resource")
+/*
+ *
+ */
+func parseFlags() bool {
+	flag.StringVar(&url, "url", "", "<url> refers to the remote resource")
 	flag.Int64Var(&port, "port", 8080, "<port> sets the port the service should listen to")
 	flag.IntVar(&duration, "duration", 2, "<duration> sets threshold the application should cache the entries")
 	flag.BoolVar(&help, "", false, "Prints this help screen")
@@ -46,16 +61,28 @@ func parseFlags() {
 	if help == true {
 		flag.PrintDefaults()
 	}
+
+	if url == "" && help != true {
+		return false
+	}
+
+	return true
 }
 
+/*
+ *
+ */
 func initialize() {
 	ex, _ := os.Executable()
 	exPath = filepath.Dir(ex)
 
-	fetch()
+	log.Print(fetch())
 	setTimer()
 }
 
+/*
+ *
+ */
 func setTimer() {
 	ticker := time.NewTicker(time.Hour)
 	quit := make(chan struct{})
@@ -75,24 +102,20 @@ func setTimer() {
 	defer close(quit)
 }
 
-func readFile(name string) (string, error) {
-	filepath := []string{exPath, "/", name}
-	content, err := ioutil.ReadFile(strings.Join(filepath, ""))
-	if err != nil {
-		return "", err
-	}
-
-	result := fmt.Sprintf("%s", content)
-	return result, nil
-}
-
+/*
+ *
+ */
 func writeFile(name string, content string) error {
 	filepath := []string{exPath, "/", name}
 	err := ioutil.WriteFile(strings.Join(filepath, ""), []byte(content), 0644)
+	log.Print(err)
 
 	return err
 }
 
+/*
+ *
+ */
 func openFile(name string) (*os.File, error) {
 	filepath := []string{exPath, "/", name}
 
@@ -100,10 +123,13 @@ func openFile(name string) (*os.File, error) {
 		writeFile(name, "")
 	}
 
-	file, err := os.Open(strings.Join(filepath, "")) // For read access.
+	file, err := os.OpenFile(strings.Join(filepath, ""), os.O_RDWR, 0644) // For read access.
 	return file, err
 }
 
+/*
+ *
+ */
 func fetch() error {
 	// Get latest rss version
 	resp, err := http.Get(url)
@@ -122,6 +148,7 @@ func fetch() error {
 	if err != nil {
 		return err
 	}
+	log.Print(2, rss)
 
 	resp.Body.Close()
 
@@ -134,13 +161,12 @@ func fetch() error {
 
 	// Check if file is new
 	info, _ := file.Stat()
+	log.Print(4, info.Size())
 	if info.Size() > 4 {
 		// Initialize vars needed for processing feed
 		fileDecoder := xml.NewDecoder(file)
 		root := models.Rss{}
 		thresh := time.Now().AddDate(0, 0, -duration)
-		dateLayout := "2006-01-02T15:04:05.000Z"
-		lastSync, err := time.Parse(dateLayout, getLastSync())
 
 		// Read existing feed
 		fileDecoder.Decode(&root)
@@ -153,13 +179,14 @@ func fetch() error {
 		// Check all existing items
 		for _, item := range root.Channel.Items {
 			// Prepare date
+			creationDate, _ := time.Parse(time.RFC1123Z, item.PubDate)
 
-			creationDate, err := time.Parse(dateLayout, item.PubDate)
+			// Get the date of the last fetched item
+			lastItem := rss.Channel.Items[len(rss.Channel.Items)-1]
+			lastPub, _ := time.Parse(time.RFC1123Z, lastItem.PubDate)
 
-			log.Print(err)
-
-			// Add if older than last sync and still younger than threshold
-			if creationDate.Before(lastSync) && creationDate.After(thresh) {
+			// Add if older than last item and still younger than threshold
+			if creationDate.Before(lastPub) && creationDate.After(thresh) {
 				newItems = append(newItems, item)
 			}
 		}
@@ -170,25 +197,21 @@ func fetch() error {
 		newItems = nil
 	}
 
+	// Reset the file before writing
+	file.Truncate(0)
+	file.Seek(0, 0)
+	file.Sync()
+
+	// Encode the rss feed
 	encoder := xml.NewEncoder(file)
-	encoder.Encode(&rss)
+	error := encoder.Encode(rss)
+	if error != nil {
+		return error
+	}
 
 	file.Close()
+	file.Sync()
 	rss = models.Rss{}
-	setLastSync()
 
 	return nil
-}
-
-func setLastSync() {
-	writeFile(".sync", time.Now().String())
-}
-
-func getLastSync() string {
-	timestamp, err := readFile(".sync")
-	if err != nil {
-		return time.Now().AddDate(0, 0, -1).String()
-	} else {
-		return timestamp
-	}
 }
