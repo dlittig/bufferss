@@ -1,7 +1,8 @@
 package main
 
 import (
-	"bufferss/models"
+	"bufferss/marshal"
+	"bufferss/unmarshal"
 	"encoding/xml"
 	"flag"
 	"fmt"
@@ -38,9 +39,7 @@ func main() {
 		filepath := []string{exPath, "/bufferss.feed"}
 		content, _ := ioutil.ReadFile(strings.Join(filepath, ""))
 
-		w.Write([]byte("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
-		w.Write(content)
-		w.Write([]byte("</xml>"))
+		w.Write([]byte(xml.Header[:len(xml.Header)-1] + string(content)))
 	})
 
 	log.Print("Successfully started.")
@@ -76,7 +75,7 @@ func initialize() {
 	ex, _ := os.Executable()
 	exPath = filepath.Dir(ex)
 
-	log.Print(fetch())
+	fetch()
 	setTimer()
 }
 
@@ -142,13 +141,16 @@ func fetch() error {
 
 	// Decode rss feed to models
 	decoder := xml.NewDecoder(resp.Body)
-	rss := models.Rss{}
+	unmarshalRss := unmarshal.Rss{
+		Version:          "2.0",
+		ContentNamespace: "http://purl.org/rss/1.0/modules/content/",
+	}
 
-	err = decoder.Decode(&rss)
+	err = decoder.Decode(&unmarshalRss)
 	if err != nil {
 		return err
 	}
-	log.Print(2, rss)
+	//log.Print(unmarshalRss)
 
 	resp.Body.Close()
 
@@ -161,11 +163,10 @@ func fetch() error {
 
 	// Check if file is new
 	info, _ := file.Stat()
-	log.Print(4, info.Size())
 	if info.Size() > 4 {
 		// Initialize vars needed for processing feed
 		fileDecoder := xml.NewDecoder(file)
-		root := models.Rss{}
+		root := unmarshal.Rss{}
 		thresh := time.Now().AddDate(0, 0, -duration)
 
 		// Read existing feed
@@ -174,7 +175,7 @@ func fetch() error {
 			return err
 		}
 
-		newItems := make([]models.Item, 0)
+		newItems := make([]unmarshal.Item, 0)
 
 		// Check all existing items
 		for _, item := range root.Channel.Items {
@@ -182,20 +183,28 @@ func fetch() error {
 			creationDate, _ := time.Parse(time.RFC1123Z, item.PubDate)
 
 			// Get the date of the last fetched item
-			lastItem := rss.Channel.Items[len(rss.Channel.Items)-1]
+			lastItem := unmarshalRss.Channel.Items[len(unmarshalRss.Channel.Items)-1]
 			lastPub, _ := time.Parse(time.RFC1123Z, lastItem.PubDate)
 
 			// Add if older than last item and still younger than threshold
 			if creationDate.Before(lastPub) && creationDate.After(thresh) {
+				// Copy content from item to item_export
 				newItems = append(newItems, item)
 			}
 		}
 
 		// Append new items to feed
-		rss.Channel.Items = append(rss.Channel.Items, newItems...)
-		root = models.Rss{}
+		unmarshalRss.Channel.Items = append(unmarshalRss.Channel.Items, newItems...)
+		root = unmarshal.Rss{}
 		newItems = nil
 	}
+
+	//Now import the rss into the marshalling rss type
+	marshalRss := marshal.Rss{
+		Version:          "2.0",
+		ContentNamespace: "http://purl.org/rss/1.0/modules/content/",
+	}
+	marshalRss.ImportFeed(unmarshalRss)
 
 	// Reset the file before writing
 	file.Truncate(0)
@@ -204,14 +213,16 @@ func fetch() error {
 
 	// Encode the rss feed
 	encoder := xml.NewEncoder(file)
-	error := encoder.Encode(rss)
+	encoder.Indent("", "  ")
+	error := encoder.Encode(marshalRss)
 	if error != nil {
 		return error
 	}
 
 	file.Close()
 	file.Sync()
-	rss = models.Rss{}
+	unmarshalRss = unmarshal.Rss{}
+	marshalRss = marshal.Rss{}
 
 	return nil
 }
