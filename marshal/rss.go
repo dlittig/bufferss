@@ -3,7 +3,6 @@ package marshal
 import (
 	unmarshal "bufferss/unmarshal"
 	"encoding/xml"
-	"log"
 )
 
 type Rss struct {
@@ -34,6 +33,5 @@ func (rss *Rss) ImportFeed(readRss unmarshal.Rss) {
 			PubDate:  readItem.PubDate,
 			Title:    readItem.Title,
 		})
-		log.Println(readItem.Content.Data)
 	}
 }
